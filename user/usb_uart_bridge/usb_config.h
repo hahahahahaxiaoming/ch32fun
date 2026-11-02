@@ -21,8 +21,12 @@
 
 #include "usb_defines.h"
 
-#define FUSB_USB_VID 0x1209
-#define FUSB_USB_PID 0xd035
+#define FUSB_USB_VID 0x1A86
+#if BRIDGE_RS485
+#define FUSB_USB_PID 0x0002
+#else
+#define FUSB_USB_PID 0x0001
+#endif
 #define FUSB_USB_REV 0x0007
 #define FUSB_STR_MANUFACTURER u"ch32fun"
 #define FUSB_STR_PRODUCT      BRIDGE_USB_PRODUCT

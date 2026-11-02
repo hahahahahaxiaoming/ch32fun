@@ -132,34 +132,60 @@ USB ISP 是芯片原厂下载模式，与应用的 CDC COM 口不是同一个接
 python tools/download.py --chip CH570 --mode uart --dry-run
 ```
 
-### Windows 自定义串口名称
+### 按 VID/PID 匹配的驱动包
 
-固件产品字符串为 **USB UART** / **USB RS485**，VID/PID 保留 `1209:D035`。
+`tools/driver/usb_bridge.inf` 为 Windows 10/11 x64、ARM64 的 CDC 驱动包模板：
+
+| 类型 | VID | PID | 设备描述名称 |
+| --- | --- | --- | --- |
+| UART | 0x1A86 | 0x0001 | USB UART |
+| RS485 | 0x1A86 | 0x0002 | USB RS485 |
+
+复用系统 `usbser.sys`，不提供新的内核二进制驱动。INF 直接按硬件 ID 绑定，
+不依赖串口改名事件任务。COM 号由 Windows 分配，实际友好名称显示需安装后验证。
+
+**当前已经生成本地测试签名包，不再是缺少 CAT 的模板。**
+微软 WDK 10.0.28000.2526 的 InfVerif 验证通过，Inf2Cat 对 Windows 10 2004+
+和 Windows 11 x64/ARM64 的目录生成检查通过，没有错误或警告。
+目录内包含 `usb_bridge.inf`、`usb_bridge.cat` 和公开测试证书 `usb_bridge_test.cer`。
+测试证书不是微软正式厂商签名，不能当作面向其他电脑发布的正式驱动包。
+
+安装测试会将指定测试证书加入本机受信任根和受信任发布者，再使用 PnPUtil 安装 INF；
+只复用微软系统 `usbser.sys`，不包含第三方内核驱动二进制。
+双击 `tools/driver/USB_Bridge_Driver_Setup.exe` 打开图形安装界面，
+勾选本机测试证书信任选项并点击“安装驱动”。它调用同一个 INF/CAT 安装流程，
+不创建改名服务或任务。EXE 入口仅作安装界面，本身不是内核驱动。
+“卸载驱动”按钮调用 `uninstall.ps1`，只删除提供者、硬件 ID、INF 文件名及
+签名证书均匹配本工程的驱动包，再移除本包测试证书信任；不删除系统 usbser.sys。
+卸载不需要勾选安装证书选项，执行前会提示连接中的设备可能断开。
+安装程序不改变测试模式、安全启动或签名强制策略；如果当前系统仍拒绝安装，
+应保留错误输出继续诊断，不能把 PnPUtil 成功当作设备名称已验证。
+安装后拔插设备，实际确认名称和 COM 口。此包尚未实际安装到开发机。
+卸载按钮同时处理驱动包及本包测试证书信任。
+
+安装形式参考了用户提供的 `CH341SER.EXE`：自解压包包含 SETUP、INF、CAT 和 SYS；
+其 CAT/SYS 具有 Microsoft Windows Hardware Compatibility Publisher 签名。
+该包 INF 匹配 CH340/CH341 的 7523、5523 等 PID，不匹配本工程的 0001/0002，
+也不能将其驱动二进制用于当前 CDC 协议，或修改其 INF 后保留原有签名。
+本工程保留自己的 INF、测试签名 CAT 和系统 usbser.sys；没有复制其签名或驱动二进制。
+图形界面源码在 `tools/driver_src/src`，重新构建执行 `tools/driver_src/build_setup.ps1`。
+
+变更 VID/PID 后必须烧录新的对应固件；旧 `1209:D035` 固件不匹配这个 INF。
+CH592 仍通过对应下载脚本使用 CH591 固件。更换 ID 后会产生新的设备实例，
+COM 号可能重新分配。此前的实机验证针对旧 ID，新 ID 版本需要重新核对枚举和收发。
+
+### USB 设备身份
+
+固件产品字符串为 **USB UART** / **USB RS485**。UART 使用 `1A86:0001`，
+RS485 使用 `1A86:0002`；两款芯片按相同规则区分模式。
 序列号为 `UART-CH570-<12位MAC十六进制>`、`RS485-CH570-...`，CH591 同理。
 工厂 MAC 通过仓库的 ROM-info 读取函数获得；每颗芯片共用固件，启动时生成设备身份。
 Flash 手动访问事务必须完全在 RAM 执行；外层 ROM-info 读取函数禁止内联，
 避免返回 Flash 中继续取指而在 USB 初始化之前停住。
 
-设备管理器中的友好名称由独立改名工具设置为：
-
-- `USB UART (COMx)`
-- `USB RS485 (COMx)`
-
-双击 `tools/drive/dist/USB_Bridge_Setup.exe`，允许管理员权限后点击“安装 / 修复”。
-工具按 VID/PID、芯片/模式序列号白名单匹配本工程设备，同时支持从 CDC 子接口追溯父设备。
-名称后面的 COM 号由系统分配。没有安装改名工具的电脑可能继续显示系统默认的串口名称。
-
-改名工具沿用参考工程的事件任务方式：在开机、登录和串口配置/启动事件后检查，
-处理后退出；“卸载并恢复”删除自己的事件任务，并恢复已备份的设备名称。
-安装目录为 `Program Files/USB Bridge Device Namer`，任务为 `USBBridgeDeviceNamer-Events`。
-保留 CDC 协议，不安装参考工程的 CH340/CH341 厂商串口驱动。
-本次仅生成程序并运行只读自测，未在开发机安装改名任务，也未烧录设备。
-
-修改改名工具源码后可重新构建：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/drive/build.ps1
-```
+已移除工程中的 `USB_Bridge_Setup.exe` 及事件任务改名工具，后续使用签名 INF 驱动包安装设备名称。
+已经安装在电脑上的旧改名工具不会因删除工程文件而自动卸载；可通过 Windows 已安装应用中的
+“USB Bridge Names”卸载入口移除其任务并恢复名称。
 
 ## 验证
 

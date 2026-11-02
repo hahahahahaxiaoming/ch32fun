@@ -1,0 +1,38 @@
+; USB CDC bridge identity package. Uses the Microsoft inbox usbser.sys.
+; Windows 10/11 x64 and ARM64. Requires a signed catalog before installation.
+[Version]
+Signature="$WINDOWS NT$"
+Class=Ports
+ClassGuid={4D36E978-E325-11CE-BFC1-08002BE10318}
+Provider=%Provider%
+DriverVer=11/02/2026,1.0.0.0
+CatalogFile=usb_bridge.cat
+PnpLockdown=1
+
+[Manufacturer]
+%Provider%=Models,NTamd64.10.0,NTarm64.10.0
+
+[Models.NTamd64.10.0]
+%UART.DeviceDesc%=Bridge_Install,USB\VID_1A86&PID_0001
+%RS485.DeviceDesc%=Bridge_Install,USB\VID_1A86&PID_0002
+
+[Models.NTarm64.10.0]
+%UART.DeviceDesc%=Bridge_Install,USB\VID_1A86&PID_0001
+%RS485.DeviceDesc%=Bridge_Install,USB\VID_1A86&PID_0002
+
+[Bridge_Install.NT]
+Include=usbser.inf
+Needs=UsbSerial_Install.NT
+
+[Bridge_Install.NT.HW]
+Include=usbser.inf
+Needs=UsbSerial_Install.NT.HW
+
+[Bridge_Install.NT.Services]
+Include=usbser.inf
+Needs=UsbSerial_Install.NT.Services
+
+[Strings]
+Provider="USB Bridge"
+UART.DeviceDesc="USB UART"
+RS485.DeviceDesc="USB RS485"
