@@ -1,0 +1,11 @@
+*.elf
+*.bin
+*.hex
+*.lst
+*.map
+generated_*.ld
+/build/
+__pycache__/
+!/tools/WCHISPTool_CH57x-59x/WCHISPTool_CH57x-59x.exe
+!/tools/WCHISPTool_CH57x-59x/WCH55xISPDLL.dll
+!/tools/drive/dist/USB_Bridge_Setup.exe
