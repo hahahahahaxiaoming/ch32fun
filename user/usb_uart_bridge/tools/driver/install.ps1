@@ -9,7 +9,7 @@ try {
     }
     $catalog = Join-Path $PSScriptRoot 'usb_bridge.cat'
     $certificateFile = Join-Path $PSScriptRoot 'usb_bridge_test.cer'
-    $expectedThumbprint = '0F02C45DB8FB05D5652680D837FED64D12018CAA'
+    $expectedThumbprint = '7B25106B89374B135C89C10170A9B79CEB090F64'
     if (-not (Test-Path -LiteralPath $catalog)) { throw 'Missing usb_bridge.cat.' }
     $signature = Get-AuthenticodeSignature -LiteralPath $catalog
     if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $expectedThumbprint) {

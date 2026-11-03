@@ -1,7 +1,7 @@
 param([switch]$WhatIf)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
-$thumbprint='0F02C45DB8FB05D5652680D837FED64D12018CAA'
+$thumbprints=@('7B25106B89374B135C89C10170A9B79CEB090F64','0F02C45DB8FB05D5652680D837FED64D12018CAA')
 try {
     if (-not $WhatIf) {
         $principal=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -18,7 +18,7 @@ try {
         $cat=Join-Path ([IO.Path]::GetDirectoryName($driver.OriginalFileName)) 'usb_bridge.cat'
         if(-not (Test-Path -LiteralPath $cat)) {continue}
         $signature=Get-AuthenticodeSignature -LiteralPath $cat
-        if(-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $thumbprint) {continue}
+        if(-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -notin $thumbprints) {continue}
         $matched+=$driver.Driver
     }
     foreach($publishedName in $matched) {
@@ -27,10 +27,12 @@ try {
         if($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {throw "Failed to uninstall $publishedName; code $LASTEXITCODE. Certificate trust retained."}
     }
     if(-not $matched.Count) {Write-Output 'No matching USB Bridge test driver package found.'}
-    foreach($store in @('Root','TrustedPublisher')) {
+    foreach($thumbprint in $thumbprints) {
+      foreach($store in @('Root','TrustedPublisher')) {
         $path="Cert:/LocalMachine/$store/$thumbprint"
         if($WhatIf) {Write-Output "Would remove only this test certificate: $path"}
         elseif(Test-Path -LiteralPath $path) {Remove-Item -LiteralPath $path}
+      }
     }
     Write-Output 'Completed. Windows usbser.sys and other drivers were not removed.'
 } catch {
