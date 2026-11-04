@@ -28,6 +28,7 @@ struct B003FunProgrammerStruct
 	uint8_t respbuffer[8196];
 	int commandplace;
 	int long_op;
+	int write_progress; // Suppress dots while displaying CH5xx write percentage.
 	int no_get_report;
 	int err_count;
 	int scratchpad_size;
@@ -336,7 +337,7 @@ resend:
 	int max_timeout = 20;
 	if( eps->long_op )
 	{
-		fprintf(stderr, ".");
+		if(!eps->write_progress) fprintf(stderr, ".");
 		max_retries = 100;
 		max_timeout = 200;
 	}
@@ -545,12 +546,14 @@ static int B003FunReadBinaryBlob( void * dev, uint32_t address_to_read_from, uin
 		if( address_to_read_from & 0x3 )
 		{
 			uint8_t bytes_to_read = 4 - (address_to_read_from & 0x3);
+			if(bytes_to_read > read_size) bytes_to_read = read_size;
+			uint8_t byte_offset = address_to_read_from & 0x3;
 			ResetOp( eps );
 			WriteOpArb( eps, ch5xx_flash_read_word_bin, sizeof(ch5xx_flash_read_word_bin) );
 			WriteOp4( eps, address_to_read_from & 0xfffffffc ); // Base address to read.
 			WriteOp4( eps, 4 ); // Read 4 bytes
 			if( CommitOp( eps, 0, 4 ) ) return -5;
-			memcpy( blob, &eps->respbuffer[eps->commandplace-8+(4-bytes_to_read)], bytes_to_read );
+			memcpy( blob, &eps->respbuffer[eps->commandplace-8+byte_offset], bytes_to_read );
 			blob += bytes_to_read;
 			read_size -= bytes_to_read;
 			address_to_read_from += bytes_to_read;
@@ -558,13 +561,14 @@ static int B003FunReadBinaryBlob( void * dev, uint32_t address_to_read_from, uin
 		while( read_size > 3 )
 		{
 			int to_read_this_time = read_size & (~3);
-			// Read stub is more than 124 bytes, so we need to fix the numbers here
-			int max_data_size = eps->scratchpad_data_size - (sizeof(ch5xx_flash_read_word_bin) - 124);
-			if( to_read_this_time > max_data_size ) to_read_this_time = max_data_size;
-			// Need to do byte-wise reading in front to line up with word alignment.
 			ResetOp( eps );
 			WriteOpArb( eps, ch5xx_flash_read_word_bin, sizeof(ch5xx_flash_read_word_bin) );
 			WriteOp4( eps, address_to_read_from ); // Base address to read.
+			/* Reserve the actual stub, both arguments and the report trailer.
+			 * The former estimate exceeded a 4096-byte report by 12 bytes. */
+			int max_data_size = ((int)eps->scratchpad_size - eps->commandplace - 8) & ~3;
+			if(max_data_size < 4) return -10;
+			if(to_read_this_time > max_data_size) to_read_this_time = max_data_size;
 			WriteOp4( eps, to_read_this_time );
 			if( CommitOp( eps, 0, to_read_this_time ) ) return -5;
 			memcpy( blob, &eps->respbuffer[eps->commandplace-8], to_read_this_time );
@@ -591,11 +595,12 @@ static int B003FunReadBinaryBlob( void * dev, uint32_t address_to_read_from, uin
 		while( read_size )
 		{
 			int to_read_this_time = read_size;
-			int max_data_size = eps->scratchpad_data_size - (sizeof(ch5xx_flash_read_byte_bin) - 124);
-			if( to_read_this_time > max_data_size ) to_read_this_time = max_data_size;
 			ResetOp( eps );
 			WriteOpArb( eps, ch5xx_flash_read_byte_bin, sizeof(ch5xx_flash_read_byte_bin) );
 			WriteOp4( eps, address_to_read_from ); // Base address to read.
+			int max_data_size = (int)eps->scratchpad_size - eps->commandplace - 8;
+			if(max_data_size < 1) return -10;
+			if(to_read_this_time > max_data_size) to_read_this_time = max_data_size;
 			WriteOp4( eps, to_read_this_time );
 			if( CommitOp( eps, 0, to_read_this_time ) ) return -5;
 			memcpy( blob, &eps->respbuffer[eps->commandplace-8], to_read_this_time );
@@ -1018,6 +1023,16 @@ static int B003FunBlockWrite( void * dev, uint32_t address_to_write, const uint8
 	}
 	else if( iss->target_chip->protocol == PROTOCOL_CH5xx )
 	{
+		/* The resident CH5xx stub writes 256-byte pages and compares the
+		 * consumed pointer against the packet end. Windows' 4096-byte HID
+		 * buffer leaves 3968 data bytes, which must be rounded down. */
+		const uint32_t page_size = 256;
+		const uint32_t packet_size = (eps->scratchpad_data_size / page_size) * page_size;
+		if(!packet_size || address_to_write % page_size || len % page_size)
+		{
+			fprintf(stderr, "Error: CH5xx writes require aligned 256-byte pages and a sufficient HID buffer.\n");
+			return -10;
+		}
 		ch5xx_write_safe(dev, 0x40001044, 0xe0, -1); // Unlock flash controller for full write
 
 		uint32_t left_to_write = len;
@@ -1028,9 +1043,12 @@ static int B003FunBlockWrite( void * dev, uint32_t address_to_write, const uint8
 		WriteOp4( eps, address_to_write ); // Base address to write
 		if( CommitOp( eps, 0, 0 ) ) return -5;
 
+		eps->write_progress = 1;
+		fprintf(stderr, "\rWriting:   0%% (0/%u bytes)", (unsigned)len);
+		fflush(stderr);
 		while( data_pos < len )
 		{
-			int current_len = (left_to_write > eps->scratchpad_data_size)?eps->scratchpad_data_size:left_to_write;
+			int current_len = (left_to_write > packet_size)?packet_size:left_to_write;
 			// fprintf(stderr, "len = %d, current_len = %d\n", len, current_len);
 			uint32_t data_ready_key = 0x12345678;
 			ResetOp( eps );
@@ -1040,10 +1058,21 @@ static int B003FunBlockWrite( void * dev, uint32_t address_to_write, const uint8
 			memcpy( &eps->commandbuffer[eps->commandplace+current_len], &data_ready_key, 4 );
 			if( MCF.PrepForLongOp ) MCF.PrepForLongOp( dev );  // Give the programmer a headsup this next operation could take a while.
 			// eps->long_op = current_len;
-			if( CommitOp( eps, current_len+4, 0 ) ) return -5;
+			if( CommitOp( eps, current_len+4, 0 ) )
+			{
+				eps->write_progress = 0;
+				fprintf(stderr, "\n");
+				return -5;
+			}
 			left_to_write -= current_len;
 			data_pos += current_len;
+			fprintf(stderr, "\rWriting: %3u%% (%u/%u bytes)",
+				(unsigned)((uint64_t)data_pos * 100 / len),
+				(unsigned)data_pos, (unsigned)len);
+			fflush(stderr);
 		}
+		eps->write_progress = 0;
+		fprintf(stderr, "\n");
 		ch5xx_flash_close(dev);
 	}
 
@@ -1164,7 +1193,9 @@ static int B003FunWriteBinaryBlob( void * dev, uint32_t address_to_write, uint32
 
 	int is_flash = IsAddressFlash( address_to_write );
 
-	if( is_flash && !iss->flash_unlocked )
+	/* CH5xx unlocks R8_GLOB_ROM_CFG in its erase/write RAM stubs.
+	 * InternalUnlockFlash accesses the unrelated CH32 FLASH->CTLR block. */
+	if( is_flash && iss->target_chip->protocol != PROTOCOL_CH5xx && !iss->flash_unlocked )
 	{
 		if( ( rw = InternalUnlockFlash( dev, iss ) ) )
 			return rw;
@@ -1216,7 +1247,11 @@ static int B003FunWriteBinaryBlob( void * dev, uint32_t address_to_write, uint32
 
 		memcpy(new_blob+spad, blob, blob_size);
 
-		MCF.Erase(dev, new_address, new_blob_size, 0);
+		ret = MCF.Erase(dev, new_address, new_blob_size, 0);
+		if(ret) {
+			free(new_blob);
+			return ret;
+		}
 		
 		if (eps->scratchpad_size > 348) {
 			ret = B003FunBlockWrite(dev, new_address, new_blob, new_blob_size);
