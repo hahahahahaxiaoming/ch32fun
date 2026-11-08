@@ -30,9 +30,6 @@ static const BridgeClock baud_clocks[] = {
     {16000000, CLK_SOURCE_HSE_16MHz},
 };
 
-/* CH570 allows PLL divisors 6..32, including values absent from the SDK enum. */
-static const BridgeClock clock_512000 = {600000000 / 7, (SYS_CLKTypeDef)(0x40 | 7)};
-
 static struct {
     const BridgeClock *clock;
     uint16_t divisor;
@@ -180,12 +177,16 @@ void bridge_usb_out(const uint8_t *data, unsigned len) {
 
 static const BridgeClock *select_baud_clock(uint32_t baud, uint16_t *divisor) {
     if (baud == 512000) {
-        *divisor = 21;
-        return &clock_512000;
+        *divisor = 18;
+        return &baud_clocks[2]; // 75 MHz, actual baud 520833 (+1.725%).
+    }
+    if (baud == 2000000) {
+        *divisor = 6;
+        return &baud_clocks[1]; // 100 MHz, actual baud 2083333 (+4.167%).
     }
     if (baud == 2500000) {
         *divisor = 5;
-        return &baud_clocks[1]; // 100 MHz gives more time to service USB and UART.
+        return &baud_clocks[1]; // 100 MHz, exact 2500000 baud.
     }
     const BridgeClock *best = NULL;
     uint32_t best_error = 0;
