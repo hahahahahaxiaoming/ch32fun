@@ -12,6 +12,47 @@ static volatile uint32_t rx_idle_ms;
 static uint8_t ready;
 volatile uint32_t bridge_ticks_per_ms = FUNCONF_SYSTEM_CORE_CLOCK / 1000;
 
+#if !BRIDGE_RS485
+/* Activity LED: one flash at power-up, then blink while bytes move in either
+ * direction. Continuous traffic keeps it blinking; a short quiet period ends
+ * the blink so even a single byte produces a visible flash. */
+#define BRIDGE_LED_BOOT_MS 150
+#define BRIDGE_LED_QUIET_MS 120
+#define BRIDGE_LED_BLINK_MS 50
+static volatile uint8_t led_hold_ms;
+static uint8_t led_blink_ms, led_on, led_boot_ms;
+
+static void led_activity(void) {
+    if (!led_hold_ms) {
+        /* First byte of a burst: light up immediately, then blink. */
+        led_on = 1;
+        led_blink_ms = BRIDGE_LED_BLINK_MS;
+        funDigitalWrite(BRIDGE_LED_PIN, 1);
+    }
+    led_hold_ms = BRIDGE_LED_QUIET_MS;
+}
+
+static void led_service(void) {
+    if (led_boot_ms) {
+        if (--led_boot_ms == 0) {
+            led_on = 0;
+            funDigitalWrite(BRIDGE_LED_PIN, 0);
+        }
+        return;
+    }
+    if (!led_hold_ms) return;
+    if (--led_hold_ms == 0) {
+        led_on = 0;
+        funDigitalWrite(BRIDGE_LED_PIN, 0);
+        return;
+    }
+    if (--led_blink_ms) return;
+    led_on ^= 1;
+    funDigitalWrite(BRIDGE_LED_PIN, led_on);
+    led_blink_ms = BRIDGE_LED_BLINK_MS;
+}
+#endif
+
 typedef struct {
     uint32_t hz;
     SYS_CLKTypeDef source;
@@ -156,6 +197,9 @@ int bridge_usb_in_complete(uint8_t *data) {
 
 void bridge_usb_out(const uint8_t *data, unsigned len) {
     bridge_capture_rx();
+#if !BRIDGE_RS485
+    if (len) led_activity();
+#endif
     if (len > USBFS_PACKET_SIZE || ring_free(&tx) < len) {
         bridge_stats.tx_ring_overflow++;
         USBFS_SendNAK(2, 0);
@@ -299,6 +343,9 @@ int bridge_set_line_coding(const uint8_t *coding) {
 }
 
 void bridge_tick(void) {
+#if !BRIDGE_RS485
+    led_service();
+#endif
     bridge_capture_rx();
     apply_pending_line();
     if (rx_idle_ms < 1000) rx_idle_ms++;
@@ -339,6 +386,9 @@ void bridge_capture_rx(void) {
         bridge_stats.rx_bytes += count;
         bridge_stats.rx_ring_overflow += dropped;
         rx_idle_ms = 0;
+#if !BRIDGE_RS485
+        led_activity();
+#endif
     }
 }
 
@@ -360,6 +410,13 @@ void bridge_init(void) {
     rs485_timer_stop();
     NVIC_SetPriority(TMR1_IRQn, 0);
     NVIC_EnableIRQ(TMR1_IRQn);
+#else
+    /* Power-up flash, serviced by the 1 ms tick. */
+    led_on = 1;
+    led_blink_ms = BRIDGE_LED_BLINK_MS;
+    led_boot_ms = BRIDGE_LED_BOOT_MS;
+    funDigitalWrite(BRIDGE_LED_PIN, 1);
+    funPinMode(BRIDGE_LED_PIN, GPIO_ModeOut_PP_5mA);
 #endif
     const uint8_t coding[7] = {0x00, 0xc2, 0x01, 0, 0, 0, 8};
     bridge_set_line_coding(coding);
