@@ -2,6 +2,7 @@
 #define _FUNCONFIG_H
 
 #define FUNCONF_ENABLE_HPE          0
+#define FUNCONF_ISR_IN_RAM          1
 #define FUNCONF_SYSTICK_USE_HCLK    1
 #define FUNCONF_USE_DEBUGPRINTF     0
 #define FUNCONF_USE_UARTPRINTF      0

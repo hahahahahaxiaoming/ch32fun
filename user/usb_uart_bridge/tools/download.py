@@ -1,103 +1,75 @@
-"""USB ISP download of one explicitly selected chip/mode; no build or driver install."""
+"""Validate a CH570 bridge APP or combine it with the bootloader for factory programming."""
+
 import argparse
-import math
 from pathlib import Path
-import tempfile
-import time
-from isp_runner import ROOT, ISP_EXE, ProvisionError, WCHISPError, run_isp
+import struct
 
 
-def firmware_path(chip, mode):
-    if chip not in ('CH570', 'CH591', 'CH592') or mode not in ('uart', 'rs485'):
-        raise ValueError('Unsupported chip or mode')
-    firmware_chip = 'CH591' if chip == 'CH592' else chip
-    return ROOT / 'build' / firmware_chip / mode / ('usb_' + mode + '.bin')
+ROOT = Path(__file__).resolve().parents[1]
+APP_ADDRESS = 0x1000
+APP_VID = 0x1A86
+APP_PIDS = {"uart": 0x0001, "rs485": 0x0002}
+APP_FLASH_LIMIT = 236 * 1024
+APP_VECTOR_TAG = 0xF3F9BDA9
 
 
-def config_text(chip, firmware):
-    if chip not in ('CH570', 'CH591', 'CH592'):
-        raise ValueError('Unsupported chip')
-    # Same WCH chip selection/options as the reference UART_CH570 project.
-    line, kind = {'CH570': (3, 112), 'CH591': (12, 145), 'CH592': (12, 146)}[chip]
-    boot, reset, reset_num = ('PB22', 'PA8', 0) if chip == 'CH570' else ('Boot0', '.', 1)
-    return f'''[Public]
-MCUName={chip}
-bMCULine={line}
-bMCUType={kind}
-DataFlashFile=.
-swzUserFile1={firmware.resolve()}
-swzUserFile2=.
-swzUserFile3=.
-swzUserFile4=.
-swzUserFile5=.
-DataFlashFileSel=0
-IsUserFile1Sel=1
-IsUserFile2Sel=0
-IsUserFile3Sel=0
-IsUserFile4Sel=0
-IsUserFile5Sel=0
-[CH57x-58xUICfg]
-bDnInterType=0
-Baud=115200
-DwnldCfgPin={boot}
-BootPinNum=1
-WProtectAddr={0 if chip == 'CH570' else '.'}
-IsCodeProtect=1
-IsRSTAsInputPin=0
-ExtRSTPinSel={reset}
-ExtRSTPinSelNum={reset_num}
-IndependentWDGEn=0
-IsSerialNoBtnDwnld=0
-IsClearDataFlash=0
-IsEraseAllCFlash=0
-IsAfterDownRest=1
-bVerifyType=1
-'''
+class UpgradeError(RuntimeError):
+    pass
+
+
+def read_firmware(chip, mode):
+    firmware = ROOT / "build" / chip / mode / f"usb_{mode}.bin"
+    if not firmware.is_file():
+        raise UpgradeError(f"Missing {firmware}. Run make first.")
+    image = firmware.read_bytes()
+    entry = int.from_bytes(image[:4], "little")
+    has_entry_jump = (entry & 0x7F) == 0x6F or (entry & 0xE003) == 0xA001
+    if (not 24 <= len(image) <= APP_FLASH_LIMIT or not has_entry_jump
+            or image[0x14:0x18] != struct.pack("<I", APP_VECTOR_TAG)):
+        raise UpgradeError(f"{firmware} is not a CH570 APP image at 0x1000.")
+    # Check the compiled USB device descriptor even if the .bin has been renamed.
+    descriptor_prefixes = (bytes.fromhex("12 01 00 02 02 02 00 40"),
+                           bytes.fromhex("12 01 00 02 EF 02 01 40"))
+    matching_ids = [pid for pid in APP_PIDS.values()
+                    if any(prefix + struct.pack("<HH", APP_VID, pid) in image
+                           for prefix in descriptor_prefixes)]
+    if matching_ids != [APP_PIDS[mode]]:
+        raise UpgradeError(f"{firmware} does not contain the expected {mode} USB identity.")
+    return firmware, image
+
+
+def create_factory_image(chip, firmware, image):
+    boot = ROOT.parent / "usb_bootloader" / "build" / chip / "usb_bootloader.bin"
+    if not boot.is_file():
+        raise UpgradeError(f"Missing {boot}. Build the USB bootloader first.")
+    boot_image = boot.read_bytes()
+    if not 0 < len(boot_image) <= APP_ADDRESS:
+        raise UpgradeError(f"Invalid bootloader size: {len(boot_image)} bytes.")
+    output = firmware.with_name(f"{firmware.stem}_{chip}_factory.bin")
+    output.write_bytes(boot_image.ljust(APP_ADDRESS, b"\xff") + image)
+    print(f"Factory image for {chip}: {output} (program at 0x0000)")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--chip', choices=('CH570', 'CH591', 'CH592'), required=True)
-    parser.add_argument('--mode', choices=('uart', 'rs485'), required=True)
-    parser.add_argument('--wait', type=int, default=120)
-    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument("--chip", choices=("CH570",), default="CH570")
+    parser.add_argument("--mode", choices=APP_PIDS, required=True)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--dry-run", action="store_true")
+    action.add_argument("--factory-image", action="store_true", help="Combine bootloader and APP for first programming")
     args = parser.parse_args(argv)
-    firmware = firmware_path(args.chip, args.mode)
-    if not firmware.is_file():
-        raise ProvisionError(f'Missing {firmware}. Run make first.')
-    config = config_text(args.chip, firmware)
-    print(f'Target: {args.chip} / {args.mode}\nFirmware: {firmware}', flush=True)
-    if args.dry_run:
-        print(config)
-        return 0
-    if not ISP_EXE.is_file():
-        raise ProvisionError(f'Missing ISP tool: {ISP_EXE}')
-    print('Hold BOOT, plug in USB, then release BOOT. Connect only ONE ISP device.', flush=True)
-    with tempfile.TemporaryDirectory(prefix='usb_bridge_isp_') as directory:
-        cfg = Path(directory) / 'download.ini'
-        cfg.write_text(config, encoding='utf-8')
-        deadline = time.monotonic() + max(0, args.wait)
-        while True:
-            remaining = max(0, math.ceil(deadline-time.monotonic()))
-            print(f'\rWaiting for {args.chip} USB ISP... {remaining}s   ', end='', flush=True)
-            try:
-                run_isp(['-c', str(cfg), '-u', 'get'], quiet=True)
-                print()
-                break
-            except WCHISPError as exc:
-                if exc.code != 5 or time.monotonic() >= deadline:
-                    print()
-                    raise
-                time.sleep(1)
-        run_isp(['-c', str(cfg), '-o', 'download', '-f', str(firmware)])
-    print('SUCCESS: downloaded and requested application start.')
-    return 0
+    firmware, image = read_firmware(args.chip, args.mode)
+    print(f"Target: {args.chip} / {args.mode} (1A86:{APP_PIDS[args.mode]:04X})\n"
+          f"APP at 0x1000: {firmware}", flush=True)
+    if args.factory_image:
+        create_factory_image(args.chip, firmware, image)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     try:
-        raise SystemExit(main())
-    except (ProvisionError, OSError, UnicodeError) as exc:
-        print(f'ERROR: {exc}', flush=True)
+        main()
+    except (UpgradeError, OSError) as exc:
+        print(f"ERROR: {exc}", flush=True)
         raise SystemExit(1)
     except KeyboardInterrupt:
         raise SystemExit(130)

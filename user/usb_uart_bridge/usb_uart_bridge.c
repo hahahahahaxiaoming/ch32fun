@@ -28,7 +28,8 @@ void HandleDataOut(struct _USBState *ctx, int endp, uint8_t *data, int len) {
 }
 int HandleSetupCustom(struct _USBState *ctx, int setup_code) {
     bridge_capture_rx();
-    if ((ctx->USBFS_SetupReqType & USB_REQ_TYP_MASK) != USB_REQ_TYP_CLASS) return 0;
+    if ((ctx->USBFS_SetupReqType & (USB_REQ_TYP_MASK | USB_REQ_RECIP_MASK)) !=
+        (USB_REQ_TYP_CLASS | USB_REQ_RECIP_INTERF) || (ctx->USBFS_IndexValue >> 16) != 0) return 0;
     switch (setup_code) {
     case CDC_GET_LINE_CODING:
         ctx->pCtrlPayloadPtr = line_coding;
@@ -43,10 +44,11 @@ int HandleSetupCustom(struct _USBState *ctx, int setup_code) {
 }
 void SysTick_Handler(void) __attribute__((interrupt));
 void SysTick_Handler(void) {
-    SysTick->CMP = SysTick->CNT + FUNCONF_SYSTEM_CORE_CLOCK / 1000;
+    SysTick->CMP = SysTick->CNT + bridge_ticks_per_ms;
     SysTick->SR = 0;
     bridge_tick();
 }
+
 int main(void) {
     SystemInit();
     usb_identity_init();
@@ -54,12 +56,13 @@ int main(void) {
     NVIC_SetPriority(USB_IRQn, 0);
     NVIC_SetPriority(BRIDGE_UART_IRQ, 0);
     NVIC_SetPriority(SysTick_IRQn, 0);
-    USBFSSetup();
+    R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
     bridge_init();
     SysTick->CTLR = 0;
     SysTick->CNT = 0;
-    SysTick->CMP = FUNCONF_SYSTEM_CORE_CLOCK / 1000 - 1;
+    SysTick->CMP = bridge_ticks_per_ms - 1;
     SysTick->CTLR = SYSTICK_CTLR_STE | SYSTICK_CTLR_STIE | SYSTICK_CTLR_STCLK;
     NVIC_EnableIRQ(SysTick_IRQn);
+    USBFSSetup();
     while (1) __asm__ volatile("wfi");
 }

@@ -14,6 +14,8 @@ ChipName11=CH584X
 ChipName12=CH585
 ChipName13=CH591
 ChipName14=CH592
+ChipName15=CH595
+ChipName16=CH596
 
 [CH570]
 McuSer=3
@@ -142,7 +144,7 @@ McuType=132
 SerIndex=1
 TypeIndex=4
 MaxFlashSize=491520
-MaxEepromSize=524288
+MaxEepromSize=526710
 IsNetworkDown=0
 IsUsbDown=1
 IsSerialDown=1
@@ -176,6 +178,28 @@ SerIndex=2
 TypeIndex=1
 MaxFlashSize=458752
 MaxEepromSize=32768
+IsNetworkDown=0
+IsUsbDown=1
+IsSerialDown=1
+
+[CH595]
+McuSer=12
+McuType=149
+SerIndex=2
+TypeIndex=2
+MaxFlashSize=245760
+MaxEepromSize=4096
+IsNetworkDown=0
+IsUsbDown=1
+IsSerialDown=1
+
+[CH596]
+McuSer=12
+McuType=150
+SerIndex=2
+TypeIndex=3
+MaxFlashSize=245760
+MaxEepromSize=4096
 IsNetworkDown=0
 IsUsbDown=1
 IsSerialDown=1

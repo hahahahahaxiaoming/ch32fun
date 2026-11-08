@@ -1,220 +1,80 @@
 # USB UART Bridge
 
-基于 `examples_usb/USBFS/usbfs_cdc_uart` 的 USB CDC ACM 转 UART / RS485 工程。
-共用仓库中的 `ch32fun` 和 `extralibs/fsusb.c`，因此请保留在当前仓库内使用。
-
 ## 芯片与接线
 
-| TARGET_MCU | UART | TX（输出） | RX（输入） | RS485 方向控制 |
-| --- | --- | --- | --- | --- |
-| CH570 | UART1 | PA3 | PA2 | PA7 |
-| CH591 | UART0，开启重映射 | PA14 | PA15 | PA13 |
+使用 CH570（支持 CH570Q），默认串口参数为 `115200 8N1`。
 
-TX 接对方 RX，RX 接对方 TX，并连接公共 GND。USB 使用芯片硬件 USBFS
-的 D+/D- 引脚，具体位置按所用芯片封装和开发板接线。
-串口为 GPIO 逻辑电平，不能直接连接 RS-232 电平。
+| 信号 | 引脚 | 接线 |
+| --- | --- | --- |
+| USB D− / D+ | PA0 / PA1 | 接 USB D− / D+ |
+| UART1 TX / RX | PA3 / PA2 | TX 接对端 RX，RX 接对端 TX，共地 |
+| RS485 方向控制 | PA7 | 接收发器并联的 DE 和 `/RE`，低电平接收，高电平发送 |
 
-RS485 固件的方向脚接外部收发器的 **DE 和低有效 /RE**，两脚并接：
-低电平接收，高电平发送。发送前拉高，等待 1 微秒后填 UART FIFO；
-定时器确认 `RB_LSR_TX_ALL_EMP`（包括最后的停止位）后拉低。
-连续排队数据保持发送方向；USB 复位也不会提前截断已经进入硬件 FIFO 的数据。
-RS485 模式占用 **TMR1** 进行结束检测，尾部检测周期在 FIFO 空后缩短为一个位时间，
-实际方向切换还受中断响应延迟影响，需上板核对。
-UART 固件不配置方向脚，也不占用该定时器。不能将 MCU 的 TX/RX 直接接到 485 A/B 总线。
-
-系统主频：CH570 和 CH591 统一为 **60 MHz**，在 `funconfig.h` 中配置。
-
-默认串口参数为 **115200、8N1**；电脑串口软件设置的波特率、数据位、
-校验位和停止位会通过 CDC 配置同步到 UART。不启用 DTR/RTS 引脚或硬件流控。
-CH5xx 不提供通用的 1.5 停止位配置；SEND_BREAK 沿用参考示例，在 CH5xx 上未实现。
-默认关闭调试输出，避免占用桥接串口。
-
-## 波特率支持（当前时钟配置）
-
-下表按当前固件的整数分频公式计算，单位为 bit/s。它表示分频匹配程度，
-不是硬件收发或持续吞吐测试结果。两款芯片均支持通过 CDC 请求配置波特率，
-但能否与对端可靠通信还取决于实际误差、对端时钟和中断响应。
-
-- **精确**：理论分频误差为零，不包含晶振误差。
-- **可选**：理论误差绝对值不超过 2%，仍需与实际对端测试。
-- **不建议**：理论误差绝对值超过 2%；2% 是本表的筛选标准，不是芯片保证值。
-
-| 请求波特率 | CH570 / CH591（60 MHz）实际值 | 误差 | 分频评估 |
-| ---: | ---: | ---: | --- |
-| 1200 | 1200 | +0.00% | 精确 |
-| 2400 | 2400 | +0.00% | 精确 |
-| 4800 | 4798.46 | -0.03% | 可选 |
-| 9600 | 9603.07 | +0.03% | 可选 |
-| 19200 | 19181.59 | -0.10% | 可选 |
-| 38400 | 38461.54 | +0.16% | 可选 |
-| 57600 | 57692.31 | +0.16% | 可选 |
-| 115200 | 115384.62 | +0.16% | 可选 |
-| 230400 | 227272.73 | -1.36% | 可选 |
-| 256000 | 258620.69 | +1.02% | 可选 |
-| 460800 | 468750 | +1.73% | 可选 |
-| 500000 | 500000 | +0.00% | 精确 |
-| 576000 | 576923.08 | +0.16% | 可选 |
-| 921600 | 937500 | +1.73% | 可选 |
-| 1000000 | 937500 | -6.25% | 不建议 |
-| 1500000 | 1500000 | +0.00% | 精确 |
-| 2000000 | 1875000 | -6.25% | 不建议 |
-| 2500000 | 2500000 | +0.00% | 精确 |
-| 3000000 | 2500000 | -16.67% | 不建议 |
-
-计算公式（与 `uart.c` 的正整数四舍五入逻辑一致）：
-
-```text
-DL = floor((主频 / 8 + floor(请求波特率 / 2)) / 请求波特率)
-实际波特率 = 主频 / (8 × DL)
-误差 = (实际波特率 / 请求波特率 - 1) × 100%
-```
-
-表格保留两位小数；调试计数中的 `actual_baud` 使用整数除法取整。
-固件只接受 `1 <= DL <= 65535` 的配置；上表不是穷举，也不代表表中最高值是芯片上限。
-两款芯片在当前 60 MHz 配置下均可精确分频得到 **1500000**，实际收发稳定性仍需上板验证。
+RS485 的 A/B 接外部收发器，UART 引脚为逻辑电平。
 
 ## 编译与烧录
 
-在本目录执行 `make`，默认编译四种固件，不烧录：
+在 `user/usb_uart_bridge` 运行 `make` 编译两版，或运行 `make uart` / `make rs485` 单独编译。
 
-| 芯片 | 模式 | 固件 | USB 产品名称 |
+| 版本 | APP VID:PID | APP 镜像 | 升级 BAT |
 | --- | --- | --- | --- |
-| CH570 | UART | `build/CH570/uart/usb_uart.bin` | USB UART |
-| CH570 | RS485 | `build/CH570/rs485/usb_rs485.bin` | USB RS485 |
-| CH591 | UART | `build/CH591/uart/usb_uart.bin` | USB UART |
-| CH591 | RS485 | `build/CH591/rs485/usb_rs485.bin` | USB RS485 |
+| UART | `1A86:0001` | `build/CH570/uart/usb_uart.bin` | `tools/flash_CH570_uart.bat` |
+| RS485 | `1A86:0002` | `build/CH570/rs485/usb_rs485.bin` | `tools/flash_CH570_rs485.bat` |
+
+Bootloader 烧到 `0x0000`，APP 烧到 `0x1000`。已有 Bootloader 时，进入下文的 HID Boot 后运行对应 BAT。
+
+客户驱动安装包为 `tools/driver/output/USB_Bridge_Driver_Setup.exe`，单独分发此 EXE 即可。重新生成时运行 `tools/driver/build_setup.ps1`。
+
+## 首次通过 USB 一次烧录 Bootloader 和 APP
+
+在 `user/usb_uart_bridge` 编译 Bootloader 和 APP。
 
 ```powershell
+make -C ../usb_bootloader CH570
 make
-make build TARGET_MCU=CH570 MODE=rs485
-make CH591
-make uart
-make rs485
 ```
 
-`make CH591` 编译该芯片的两种模式；`make uart` / `make rs485` 编译两个芯片对应模式。
-当前 Windows 环境自动选择 `riscv-none-embed`，也可使用 `PREFIX=...` 指定其他工具链。
-每个固件目录包含 `.bin`、`.hex`、`.elf`、`.map`、`.lst` 和链接脚本。
-`make clean` 清理四种固件的构建产物。
+让目标板进入**原厂 USB ISP**，按板型双击对应脚本，一次写入 Bootloader 和 APP。
 
-通过编程器/minichlink 烧录时，必须明确指定芯片和模式，例如：
+- UART 使用 `tools/flash_factory_CH570_uart.bat`。
+- RS485 使用 `tools/flash_factory_CH570_rs485.bat`。
+
+当前 `EraseCodeFlash=$true`，会先整片擦除 CodeFlash。
+
+## 通过 USB 单独烧录 Bootloader
+
+在 `tools/flash_bootloader.ps1` 中将 `EraseCodeFlash` 设为 `$false`，让目标板进入**原厂 USB ISP**，然后在 `user/usb_uart_bridge` 运行以下命令。
 
 ```powershell
-make flash TARGET_MCU=CH570 MODE=uart
+make -C ../usb_bootloader CH570
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/flash_bootloader.ps1
 ```
 
-### 双击 USB ISP 烧录
+## 通过 HID Boot 手动恢复 APP
 
-先 `make`，再按实际芯片和模式双击 `tools` 中对应脚本：
+按住目标板的 **PA7 Boot 键**上电，上电后松开。确认只有目标板枚举为 `1209:B003`，再运行对应 BAT，或在仓库根目录按板型选一条命令。
 
-- `flash_CH570_uart.bat`
-- `flash_CH570_rs485.bat`
-- `flash_CH591_uart.bat`
-- `flash_CH591_rs485.bat`
-- `flash_CH592_uart.bat`：CH592 下载模式，复用 CH591 UART 固件。
-- `flash_CH592_rs485.bat`：CH592 下载模式，复用 CH591 RS485 固件，方向脚同为 PA13。
-
-CH592 脚本选择 ISP 芯片类型 CH592（146），读取 `build/CH591` 下的对应固件；
-`make` 仍然只生成四种固件。复用固件的 USB 序列号仍带 CH591 标识，改名工具可按原规则识别。
-
-需要 Python 3.7 或更新版本，以及 WCH ISP 工具所需的 USB 下载驱动。
-按住板子的 BOOT/下载按键插入 USB，再释放，脚本最多等待 120 秒。
-一次只连接一台处于 ISP 模式的设备，下载完成后请求运行应用。
-USB ISP 是芯片原厂下载模式，与应用的 CDC COM 口不是同一个接口；
-板子的 BOOT 电路/按键位置按具体硬件确认。
-
-`tools/WCHISPTool_CH57x-59x` 和调用方式参考 `D:/gitee/UART_CH570/TOOLS`。
-脚本不构建固件，缺少目标文件会直接报错；只选择应用文件，DataFlash 文件未选中。
-四个脚本分别固定芯片和模式，下载 INI 为临时生成，不使用 GUI 遗留的文件选择。
-可以先执行无硬件预览：
+**UART**
 
 ```powershell
-python tools/download.py --chip CH570 --mode uart --dry-run
+.\minichlink\minichlink.exe -C b003boot -w .\user\usb_uart_bridge\build\CH570\uart\usb_uart.bin 0x1000 -b
 ```
 
-### 按 VID/PID 匹配的驱动包
+**RS485**
 
-`tools/driver/usb_bridge.inf` 为 Windows 10/11 x64、ARM64 的 CDC 驱动包模板：
+```powershell
+.\minichlink\minichlink.exe -C b003boot -w .\user\usb_uart_bridge\build\CH570\rs485\usb_rs485.bin 0x1000 -b
+```
 
-| 类型 | VID | PID | 设备描述名称 |
-| --- | --- | --- | --- |
-| UART | 0x1A86 | 0x0001 | USB UART |
-| RS485 | 0x1A86 | 0x0002 | USB RS485 |
+## 生成 Bootloader 与 APP 合并镜像
 
-复用系统 `usbser.sys`，不提供新的内核二进制驱动。INF 直接按硬件 ID 绑定，
-不依赖串口改名事件任务。COM 号由 Windows 分配，实际友好名称显示需安装后验证。
+在 `user/usb_uart_bridge` 运行以下命令，生成对应 APP 目录下的 `*_factory.bin`。
 
-**当前已经生成本地测试签名包，不再是缺少 CAT 的模板。**
-微软 WDK 10.0.28000.2526 的 InfVerif 验证通过，Inf2Cat 对 Windows 10 2004+
-和 Windows 11 x64/ARM64 的目录生成检查通过，没有错误或警告。
-目录内包含 `usb_bridge.inf`、`usb_bridge.cat` 和公开测试证书 `usb_bridge_test.cer`。
-测试证书不是微软正式厂商签名，不能当作面向其他电脑发布的正式驱动包。
-当前测试证书有效期至 **2036-11-02**（10 年），CAT 已使用新证书重签。
-已安装的一年期证书不会自动延长，需要重新运行安装程序以信任新证书并更新驱动包。
-卸载程序兼容识别一年期旧证书及十年期新证书对应的本工程驱动包。
+```powershell
+make -C ../usb_bootloader CH570
+make
+py -3 tools/download.py --mode uart --factory-image
+py -3 tools/download.py --mode rs485 --factory-image
+```
 
-安装测试会将指定测试证书加入本机受信任根和受信任发布者，再使用 PnPUtil 安装 INF；
-只复用微软系统 `usbser.sys`，不包含第三方内核驱动二进制。
-双击 `tools/driver/USB_Bridge_Driver_Setup.exe` 打开图形安装界面，
-勾选本机测试证书信任选项并点击“安装驱动”。它调用同一个 INF/CAT 安装流程，
-不创建改名服务或任务。EXE 入口仅作安装界面，本身不是内核驱动。
-“卸载驱动”按钮调用 `uninstall.ps1`，只删除提供者、硬件 ID、INF 文件名及
-签名证书均匹配本工程的驱动包，再移除本包测试证书信任；不删除系统 usbser.sys。
-卸载不需要勾选安装证书选项，执行前会提示连接中的设备可能断开。
-安装程序不改变测试模式、安全启动或签名强制策略；如果当前系统仍拒绝安装，
-应保留错误输出继续诊断，不能把 PnPUtil 成功当作设备名称已验证。
-安装后拔插设备，实际确认名称和 COM 口。此包尚未实际安装到开发机。
-卸载按钮同时处理驱动包及本包测试证书信任。
-
-安装形式参考了用户提供的 `CH341SER.EXE`：自解压包包含 SETUP、INF、CAT 和 SYS；
-其 CAT/SYS 具有 Microsoft Windows Hardware Compatibility Publisher 签名。
-该包 INF 匹配 CH340/CH341 的 7523、5523 等 PID，不匹配本工程的 0001/0002，
-也不能将其驱动二进制用于当前 CDC 协议，或修改其 INF 后保留原有签名。
-本工程保留自己的 INF、测试签名 CAT 和系统 usbser.sys；没有复制其签名或驱动二进制。
-图形界面源码在 `tools/driver_src/src`，重新构建执行 `tools/driver_src/build_setup.ps1`。
-
-变更 VID/PID 后必须烧录新的对应固件；旧 `1209:D035` 固件不匹配这个 INF。
-CH592 仍通过对应下载脚本使用 CH591 固件。更换 ID 后会产生新的设备实例，
-COM 号可能重新分配。此前的实机验证针对旧 ID，新 ID 版本需要重新核对枚举和收发。
-
-### USB 设备身份
-
-固件产品字符串为 **USB UART** / **USB RS485**。UART 使用 `1A86:0001`，
-RS485 使用 `1A86:0002`；两款芯片按相同规则区分模式。
-序列号为 `UART-CH570-<12位MAC十六进制>`、`RS485-CH570-...`，CH591 同理。
-工厂 MAC 通过仓库的 ROM-info 读取函数获得；每颗芯片共用固件，启动时生成设备身份。
-Flash 手动访问事务必须完全在 RAM 执行；外层 ROM-info 读取函数禁止内联，
-避免返回 Flash 中继续取指而在 USB 初始化之前停住。
-
-已移除工程中的 `USB_Bridge_Setup.exe` 及事件任务改名工具，后续使用签名 INF 驱动包安装设备名称。
-已经安装在电脑上的旧改名工具不会因删除工程文件而自动卸载；可通过 Windows 已安装应用中的
-“USB Bridge Names”卸载入口移除其任务并恢复名称。
-
-## 验证
-
-CH570、CH591 的 UART 和 RS485 四个目标已使用当前环境的 RISC-V GCC 12 编译并链接通过。
-2026-11-02 用户实机验证：通过 `flash_CH592_uart.bat` 烧录复用的 CH591 UART
-固件后，CH592 可正常启动。此前用户已确认接收时序修正后的串口收发可用。
-CH592 的 RS485 方向控制，以及其他芯片/模式的完整硬件验证仍待进行。
-后续可将 UART TX/RX 短接，在电脑打开 CDC 串口验证不同波特率下的数据回环，
-再连接真实设备验证双向收发；RS485 使用外部收发器验证方向切换。
-UART RX 数据就绪/线路状态中断读取 FIFO；TX FIFO 空中断继续发送。
-UART 中断、FIFO 接收函数和 USB IN 数据准备函数放在 RAM 中运行。
-UART 中断只处理 FIFO 和队列，不准备 USB 包；USB 回调、数据拷贝过程及
-SysTick 中断也会读取 UART FIFO，缩短同优先级中断处理期间的接收空窗。
-主循环休眠，不轮询 UART。USB IN 完成中断连续发送后续数据，1 ms SysTick
-中断负责不足 64 字节的尾包调度。USB OUT 接收中断将数据写入发送队列。
-
-软件环形队列：TX 1024 字节、RX 2048 字节；硬件 USB 端点缓冲仍为 4 × 64 字节。
-TX 剩余空间不足一个 USB 包时 NAK，UART 消费队列后重新 ACK。
-RX 没有外部硬件流控，电脑长期不读取时，缓冲满后仍会丢弃新数据。
-波特率变更会清空 UART FIFO 和软件队列，应在空闲时修改参数。
-
-可通过调试器查看全局 `bridge_stats`：收发字节计数、硬件接收溢出、帧错误、
-校验错误、软件队列溢出和 `actual_baud`（按分频计算的实际波特率）。
-错误计数是观察到的错误事件数，不等于丢失的字节数。
-计数累计到重新启动；不通过桥接串口输出调试文字。
-
-
-开发期间已通过环形队列、USB 分包、TX NAK/恢复、分频、485 方向控制、
-下载脚本路由和 Flash 读取函数 RAM 地址检查；这些检查不能代替硬件时序验证。
+按板型选择镜像，通过编程器或原厂 USB ISP 从 `0x0000` 烧录。

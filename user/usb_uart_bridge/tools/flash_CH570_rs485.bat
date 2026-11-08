@@ -1,25 +1,22 @@
 @echo off
 setlocal EnableExtensions
-chcp 65001 >nul
-title CH570 USB rs485 Download
-pushd "%~dp0" || exit /b 1
+title CH570 USB RS485 APP Download
+pushd "%~dp0..\..\.." || exit /b 1
 set "RESULT=1"
-py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 7) else 1)" >nul 2>nul
-if not errorlevel 1 (
-    py -3 "download.py" --chip CH570 --mode rs485 %*
-    goto :result
+set "APP=user\usb_uart_bridge\build\CH570\rs485\usb_rs485.bin"
+if not exist "minichlink\minichlink.exe" (
+    echo ERROR: minichlink.exe is missing.
+    goto :finish
 )
-python -c "import sys; sys.exit(0 if sys.version_info >= (3, 7) else 1)" >nul 2>nul
-if not errorlevel 1 (
-    python "download.py" --chip CH570 --mode rs485 %*
-    goto :result
+if not exist "%APP%" (
+    echo ERROR: Missing %APP%. Run make rs485 in usb_uart_bridge.
+    goto :finish
 )
-echo ERROR: Python 3.7 or newer is required.
-goto :finish
-:result
+echo Writing RS485 APP. Only the target board should be in Boot mode.
+"minichlink\minichlink.exe" -C b003boot -w "%APP%" 0x1000 -b
 set "RESULT=%ERRORLEVEL%"
 :finish
-if not "%RESULT%"=="0" echo ERROR: Download failed, code %RESULT%.
+if not "%RESULT%"=="0" echo ERROR: Bridge upgrade failed, code %RESULT%.
 popd
 pause
 endlocal & exit /b %RESULT%

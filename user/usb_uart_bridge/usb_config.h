@@ -5,7 +5,7 @@
 #include "ch32fun.h"
 #include "usb_identity.h"
 
-#define FUSB_BUFFERS_NUMBER   4 // Number of EP buffers (one for EP0, one per each IN/OUT, two for double)
+#define FUSB_BUFFERS_NUMBER   4 // EP0 and CDC EP1/2/3
 #define FUSB_EP1_MODE         USBFS_EP_MODE_TX // IN
 #define FUSB_EP2_MODE         USBFS_EP_MODE_RX // OUT
 #define FUSB_EP3_MODE         USBFS_EP_MODE_TX // IN
@@ -18,6 +18,7 @@
 #define FUSB_USER_HANDLERS    1
 #define FUSB_USE_DMA7_COPY    0
 #define FUSB_VDD_5V           FUNCONF_USE_5V_VDD
+#define FUSB_FROM_RAM         1
 
 #include "usb_defines.h"
 
@@ -27,7 +28,7 @@
 #else
 #define FUSB_USB_PID 0x0001
 #endif
-#define FUSB_USB_REV 0x0007
+#define FUSB_USB_REV 0x0009
 #define FUSB_STR_MANUFACTURER u"ch32fun"
 #define FUSB_STR_PRODUCT      BRIDGE_USB_PRODUCT
 
@@ -35,10 +36,8 @@
 static const uint8_t device_descriptor[] = {
 	18, //bLength - Length of this descriptor
 	1,  //bDescriptorType - Type (Device)
-	0x10, 0x01, //bcdUSB - The highest USB spec version this device supports (USB1.1)
-	0x02, //bDeviceClass - Device Class
-	0x0, //bDeviceSubClass - Device Subclass
-	0x0, //bDeviceProtocol - Device Protocol  (000 = use config descriptor)
+	0x00, 0x02, // bcdUSB 2.0
+	0x02, 0x02, 0x00, // CDC ACM device, binds to Windows usbser.sys
 	64, //bMaxPacketSize - Max packet size for EP0
   (uint8_t)(FUSB_USB_VID), (uint8_t)(FUSB_USB_VID >> 8), //idVendor - ID Vendor
 	(uint8_t)(FUSB_USB_PID), (uint8_t)(FUSB_USB_PID >> 8), //idProduct - ID Product
@@ -49,13 +48,15 @@ static const uint8_t device_descriptor[] = {
 	1, //bNumConfigurations - Max number of configurations (if more then 1, you can switch between them)
 };
 
+#define BRIDGE_CONFIG_LENGTH 67
+
 /* Configuration Descriptor Set */
 static const uint8_t config_descriptor[ ] =
 {
   0x09,        // bLength
   0x02,        // bDescriptorType (Configuration)
-  0x43, 0x00,  // wTotalLength 67
-  0x02,        // bNumInterfaces 2
+  BRIDGE_CONFIG_LENGTH, 0x00,
+  0x02,        // bNumInterfaces: CDC control and data
   0x01,        // bConfigurationValue
   0x00,        // iConfiguration (String Index)
   0x80,        // bmAttributes
@@ -117,14 +118,14 @@ static const uint8_t config_descriptor[ ] =
   0x00,        // bInterfaceSubClass
   0x00,        // bInterfaceProtocol - Transparent
   0x00,        // iInterface (String Index)
-  // EP2 - device to host
+  // EP2 - host to device
   0x07,        // bLength
   0x05,        // bDescriptorType (Endpoint)
   0x02,        // bEndpointAddress (OUT/H2D)
   0x02,        // bmAttributes (Bulk)
   0x40, 0x00,  // wMaxPacketSize 64
   0x00,        // bInterval 0 (unit depends on device speed)
-  // EP3 - host to device
+  // EP3 - device to host
   0x07,        // bLength
   0x05,        // bDescriptorType (Endpoint)
   0x83,        // bEndpointAddress (IN/D2H)
@@ -132,8 +133,8 @@ static const uint8_t config_descriptor[ ] =
   0x40, 0x00,  // wMaxPacketSize 64
   0x00,        // bInterval 0 (unit depends on device speed)
 
-  // 67 bytes
 };
+_Static_assert(sizeof(config_descriptor) == BRIDGE_CONFIG_LENGTH, "USB configuration length");
 
 struct usb_string_descriptor_struct {
 	uint8_t bLength;
@@ -165,7 +166,6 @@ const static struct descriptor_list_struct {
 } descriptor_list[] = {
 	{0x00000100, device_descriptor, sizeof(device_descriptor)},
 	{0x00000200, config_descriptor, sizeof(config_descriptor)},
-	// {0x00002100, config_descriptor + 18, 9 }, // Not sure why, this seems to be useful for Windows + Android.
 
 	{0x00000300, (const uint8_t *)&language, 4},
 	{0x04090301, (const uint8_t *)&string1, string1.bLength},

@@ -10,6 +10,37 @@ BridgeStats bridge_stats;
 static volatile uint8_t in_active, need_zlp, out_paused;
 static volatile uint32_t rx_idle_ms;
 static uint8_t ready;
+volatile uint32_t bridge_ticks_per_ms = FUNCONF_SYSTEM_CORE_CLOCK / 1000;
+
+typedef struct {
+    uint32_t hz;
+    SYS_CLKTypeDef source;
+} BridgeClock;
+
+static const BridgeClock baud_clocks[] = {
+    {FUNCONF_SYSTEM_CORE_CLOCK, CLK_SOURCE_CH5XX},
+    {100000000, CLK_SOURCE_PLL_100MHz},
+    {75000000, CLK_SOURCE_PLL_75MHz},
+    {50000000, CLK_SOURCE_PLL_50MHz},
+    {40000000, CLK_SOURCE_PLL_40MHz},
+    {30000000, CLK_SOURCE_PLL_30MHz},
+    {25000000, CLK_SOURCE_PLL_25MHz},
+    {24000000, CLK_SOURCE_PLL_24MHz},
+    {20000000, CLK_SOURCE_PLL_20MHz},
+    {16000000, CLK_SOURCE_HSE_16MHz},
+};
+
+/* CH570 allows PLL divisors 6..32, including values absent from the SDK enum. */
+static const BridgeClock clock_512000 = {600000000 / 7, (SYS_CLKTypeDef)(0x40 | 7)};
+
+static struct {
+    const BridgeClock *clock;
+    uint16_t divisor;
+    uint8_t lcr;
+#if BRIDGE_RS485
+    uint8_t frame_bits;
+#endif
+} pending_line;
 
 #if BRIDGE_RS485
 static uint8_t rs485_active;
@@ -32,7 +63,7 @@ static void rs485_begin(void) {
     if (!rs485_active) {
         funDigitalWrite(RS485_DIR_PIN, 1);
         rs485_active = 1;
-        Delay_Us(1);
+        DelaySysTick(bridge_ticks_per_ms / 1000);
     }
 }
 /* TFC can be zero while the shift register is sending the final stop bit. */
@@ -53,6 +84,7 @@ void TMR1_IRQHandler(void) {
 static void tx_fill(void) __attribute__((section(".srodata.bridge_tx"), noinline));
 static void tx_fill(void) {
     uint8_t byte;
+    if (pending_line.divisor) return;
 #if BRIDGE_RS485
     if (ring_count(&tx)) rs485_begin();
 #endif
@@ -69,7 +101,7 @@ static void tx_fill(void) {
 }
 
 static void out_resume(void) {
-    if (out_paused && ring_free(&tx) >= USBFS_PACKET_SIZE) {
+    if (out_paused && !pending_line.divisor && ring_free(&tx) >= USBFS_PACKET_SIZE) {
         out_paused = 0;
         USBFS_SendACK(2, 0);
     }
@@ -146,42 +178,128 @@ void bridge_usb_out(const uint8_t *data, unsigned len) {
     out_resume();
 }
 
+static const BridgeClock *select_baud_clock(uint32_t baud, uint16_t *divisor) {
+    if (baud == 512000) {
+        *divisor = 21;
+        return &clock_512000;
+    }
+    if (baud == 2500000) {
+        *divisor = 5;
+        return &baud_clocks[1]; // 100 MHz gives more time to service USB and UART.
+    }
+    const BridgeClock *best = NULL;
+    uint32_t best_error = 0;
+    *divisor = 0;
+    for (unsigned i = 0; i < sizeof(baud_clocks) / sizeof(baud_clocks[0]); i++) {
+        const BridgeClock *clock = &baud_clocks[i];
+        if (clock->source == CLK_SOURCE_HSE_16MHz && baud != 2000000) continue;
+        uint32_t base = clock->hz / 8;
+        uint32_t rounded = (base + baud / 2) / baud;
+        if (!rounded || rounded > UINT16_MAX) continue;
+        uint32_t floor = base / baud;
+        /* Compare both adjacent divisors. The absolute baud error is error / dl. */
+        for (uint32_t dl = floor ? floor : 1; dl <= floor + 1 && dl <= UINT16_MAX; dl++) {
+            uint32_t target = baud * dl;
+            uint32_t error = base > target ? base - target : target - base;
+            if (!best || (uint64_t)error * *divisor < (uint64_t)best_error * dl) {
+                best = clock;
+                *divisor = dl;
+                best_error = error;
+            }
+        }
+        if (best && !best_error) break;
+    }
+    return best;
+}
+
+/* The PLL stays powered for USB even when the CPU switches to HSE. */
+static void switch_core_clock(SYS_CLKTypeDef source) __attribute__((section(".highcode"), noinline));
+static void switch_core_clock(SYS_CLKTypeDef source) {
+    if (source == CLK_SOURCE_HSE_16MHz) {
+        SYS_SAFE_ACCESS(
+            R8_CLK_SYS_CFG = source;
+            R8_FLASH_CFG = 0x02;
+        );
+    } else {
+        SYS_SAFE_ACCESS(
+            R8_FLASH_CFG = 0x01;
+            R8_FLASH_SCK |= 1 << 4;
+            R8_CLK_SYS_CFG = source;
+        );
+    }
+}
+
+static void apply_pending_line(void) {
+    uint16_t div = pending_line.divisor;
+    if (!div || (ready && !(BRIDGE_UART->LSR & RB_LSR_TX_ALL_EMP))) return;
+
+#if BRIDGE_RS485
+    rs485_timer_stop();
+    if (rs485_active) {
+        funDigitalWrite(RS485_DIR_PIN, 0);
+        rs485_active = 0;
+    }
+#endif
+    BRIDGE_UART->IER = 0;
+    const BridgeClock *clock = pending_line.clock;
+    if (R8_CLK_SYS_CFG != clock->source) {
+        switch_core_clock(clock->source);
+        bridge_ticks_per_ms = clock->hz / 1000;
+        SysTick->CMP = SysTick->CNT + bridge_ticks_per_ms;
+        SysTick->SR = 0;
+    }
+    /* Two-byte RX trigger amortizes IRQ entry while leaving six FIFO slots free. */
+    BRIDGE_UART->FCR = RB_FCR_FIFO_EN | RB_FCR_RX_FIFO_CLR | RB_FCR_TX_FIFO_CLR | 0x40;
+    BRIDGE_UART->LCR = pending_line.lcr;
+    BRIDGE_UART->DIV = 1;
+    BRIDGE_UART->DL = div;
+    BRIDGE_UART->MCR = RB_MCR_INT_OE;
+    rx.read = rx.write = 0;
+    rx_idle_ms = 0;
+    need_zlp = 0;
+    bridge_stats.actual_baud = clock->hz / 8 / div;
+#if BRIDGE_RS485
+    rs485_bit_ticks = div * 8;
+    rs485_frame_ticks = rs485_bit_ticks * pending_line.frame_bits;
+#endif
+    pending_line.divisor = 0;
+    BRIDGE_UART->IER = RB_IER_TXD_EN | RB_IER_RECV_RDY | RB_IER_LINE_STAT;
+    if (ready && USBFSCTX.USBFS_DevConfig) {
+        if (ring_count(&tx)) tx_fill();
+        out_resume();
+    }
+}
+
 int bridge_set_line_coding(const uint8_t *coding) {
     uint32_t baud = (uint32_t)coding[0] | ((uint32_t)coding[1] << 8) |
                     ((uint32_t)coding[2] << 16) | ((uint32_t)coding[3] << 24);
     if (!baud || coding[4] > 2 || coding[4] == 1 || coding[5] > 4 ||
         coding[6] < 5 || coding[6] > 8) return 0;
-    uint32_t div = ((FUNCONF_SYSTEM_CORE_CLOCK / 8) + baud / 2) / baud;
-    if (!div || div > 65535) return 0;
+    uint16_t div;
+    const BridgeClock *clock = select_baud_clock(baud, &div);
+    if (!clock) return 0;
+
     static const uint8_t parity[] = {0, 0x08, 0x18, 0x28, 0x38};
-    BRIDGE_UART->IER = 0;
-#if !defined(CH570)
-    BRIDGE_UART->IER = RB_IER_RESET;
-#endif
-    BRIDGE_UART->FCR = RB_FCR_FIFO_EN | RB_FCR_RX_FIFO_CLR | RB_FCR_TX_FIFO_CLR;
-    BRIDGE_UART->LCR = (coding[6] - 5) | (coding[4] == 2 ? RB_LCR_STOP_BIT : 0) | parity[coding[5]];
-    BRIDGE_UART->DIV = 1;
-    BRIDGE_UART->DL = div;
-    BRIDGE_UART->MCR = RB_MCR_INT_OE;
-    tx.read = tx.write = 0;
-    rx.read = rx.write = 0;
-    rx_idle_ms = 0;
-    need_zlp = 0;
-    /* Keep any already armed USB IN transfer intact across line changes. */
-    out_paused = 0;
-    if (ready) USBFS_SendACK(2, 0);
-    bridge_stats.actual_baud = FUNCONF_SYSTEM_CORE_CLOCK / 8 / div;
+    pending_line.clock = clock;
+    pending_line.divisor = div;
+    pending_line.lcr = (coding[6] - 5) | (coding[4] == 2 ? RB_LCR_STOP_BIT : 0) | parity[coding[5]];
 #if BRIDGE_RS485
-    rs485_frame_ticks = div * 8 * (1 + coding[6] + (coding[5] != 0) + (coding[4] == 2 ? 2 : 1));
-    rs485_bit_ticks = div * 8;
-    if (rs485_active) rs485_timer_arm(rs485_frame_ticks);
+    pending_line.frame_bits = 1 + coding[6] + (coding[5] != 0) + (coding[4] == 2 ? 2 : 1);
 #endif
-    BRIDGE_UART->IER = RB_IER_TXD_EN | RB_IER_RECV_RDY | RB_IER_LINE_STAT;
+    /* Drop the old software TX queue, but let bytes already in UART finish. */
+    tx.read = tx.write;
+    BRIDGE_UART->IER &= ~RB_IER_THR_EMPTY;
+    if (ready && USBFSCTX.USBFS_DevConfig) {
+        USBFS_SendNAK(2, 0);
+        out_paused = 1;
+    }
+    apply_pending_line();
     return 1;
 }
 
 void bridge_tick(void) {
     bridge_capture_rx();
+    apply_pending_line();
     if (rx_idle_ms < 1000) rx_idle_ms++;
     if (ready && !USBFSCTX.USBFS_DevConfig) {
         in_active = need_zlp = 0;
@@ -201,15 +319,24 @@ void bridge_capture_rx(void) {
     if (status & RB_LSR_OVER_ERR) bridge_stats.rx_overrun++;
     if (status & RB_LSR_FRAME_ERR) bridge_stats.rx_frame_error++;
     if (status & RB_LSR_PAR_ERR) bridge_stats.rx_parity_error++;
+    uint32_t write = rx.write;
+    uint32_t free = UART_RX_BUF_SIZE - (write - rx.read);
+    uint32_t count = 0;
+    uint32_t dropped = 0;
     while (BRIDGE_UART->RFC) {
         uint8_t byte = BRIDGE_UART->THR_RBR;
-        bridge_stats.rx_bytes++;
-        uint32_t write = rx.write;
-        if (write - rx.read < UART_RX_BUF_SIZE) {
+        count++;
+        if (free) {
             rx.data[write & (UART_RX_BUF_SIZE - 1)] = byte;
-            __asm__ volatile("" ::: "memory");
-            rx.write = write + 1;
-        } else bridge_stats.rx_ring_overflow++;
+            write++;
+            free--;
+        } else dropped++;
+    }
+    if (count) {
+        __asm__ volatile("" ::: "memory");
+        rx.write = write;
+        bridge_stats.rx_bytes += count;
+        bridge_stats.rx_ring_overflow += dropped;
         rx_idle_ms = 0;
     }
 }
@@ -223,7 +350,6 @@ void BRIDGE_UART_HANDLER(void) {
 }
 
 void bridge_init(void) {
-    board_uart_init();
     funDigitalWrite(UART_TX_PIN, 1);
     funPinMode(UART_RX_PIN, GPIO_ModeIN_PU);
     funPinMode(UART_TX_PIN, GPIO_ModeOut_PP_5mA);

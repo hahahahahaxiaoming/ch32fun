@@ -8,11 +8,7 @@
 #define BRIDGE_USB_PRODUCT u"USB UART"
 #define BRIDGE_SERIAL_MODE "UART"
 #endif
-#if defined(CH570)
 #define BRIDGE_SERIAL_PREFIX BRIDGE_SERIAL_MODE "-CH570-"
-#else
-#define BRIDGE_SERIAL_PREFIX BRIDGE_SERIAL_MODE "-CH591-"
-#endif
 #define BRIDGE_SERIAL_CHARS (sizeof(BRIDGE_SERIAL_PREFIX) - 1 + 12)
 struct bridge_serial_descriptor {
     uint8_t length;
