@@ -39,9 +39,9 @@ static void boot_print_version(uint8_t reset_flag, int run_app) {
 
 static int app_present(void) {
     uint32_t first = *(volatile uint32_t *)BOOT_APP_ADDRESS;
-    /* CH592F_DEMO startup_CH592.S embeds this word in the vector table. */
+    /* SDK startup embeds a chip-specific word in the vector table. */
     uint32_t vector_tag = *(volatile const uint32_t *)(BOOT_APP_ADDRESS + 0x14u);
-    return vector_tag == 0xf5f9bda9u &&
+    return vector_tag == BOOT_APP_VECTOR_TAG &&
            ((first & 0x7f) == 0x6f || (first & 0xe003) == 0xa001);
 }
 
@@ -132,7 +132,9 @@ int main(void) {
     /* Snapshot the reason before clock/peripheral initialization. */
     uint8_t reset_flag = R8_RESET_STATUS & RB_RESET_FLAG;
 #endif
-    /* Recovery key is handled here, independently of the application. */
+    /* Sample the active-low recovery key before configuring the boot LED.
+     * CH570 shares PA7: its external circuit must tolerate a pressed key
+     * while this pin drives the active-high LED after entering USB mode. */
     funPinMode(BOOT_BUTTON_PIN, GPIO_ModeIN_PU);
     for(volatile int settle = 0; settle < 2000; settle++) __asm__ volatile("nop");
     int force_boot = !funDigitalRead(BOOT_BUTTON_PIN);
@@ -156,6 +158,10 @@ int main(void) {
     /* Force a detectable detach after a factory-ISP software launch as well. */
     USBFSReset();
     Delay_Ms(100);
+#if defined(CH570)
+    /* PA0/PA1 are shared by the debug interface and USB D-/D+. */
+    R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
+#endif
     USBFSSetup();
     process_loop();
 }

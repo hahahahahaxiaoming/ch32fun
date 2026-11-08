@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := all
-# Shared diagnostic image for CH591 and CH592.
-SUPPORTED_MCUS := CH592
+# CH591 uses the CH592 image; CH570 has its own RAM layout and pin configuration.
+SUPPORTED_MCUS := CH570 CH592
 ifeq ($(OS),Windows_NT)
 ifneq ($(shell where riscv-none-embed-gcc 2>nul),)
 PREFIX ?= riscv-none-embed
@@ -19,13 +19,18 @@ build: all
 endif
 else
 ifeq ($(filter $(TARGET_MCU),$(SUPPORTED_MCUS)),)
-$(error Use TARGET_MCU=CH592; this shared firmware also supports CH591)
+$(error Use TARGET_MCU=CH570 or CH592; the CH592 image also supports CH591)
 endif
 OUTPUT_DIR := build/$(TARGET_MCU)
 TARGET := $(OUTPUT_DIR)/usb_bootloader
 LINKER_SCRIPT := usb_bootloader.ld
 ADDITIONAL_C_FILES := ../../extralibs/fsusb.c
 EXTRA_CFLAGS += -D$(TARGET_MCU)
+ifeq ($(TARGET_MCU),CH570)
+LDFLAGS += -Wl,--defsym=BOOT_RAM_SIZE=12288
+else
+LDFLAGS += -Wl,--defsym=BOOT_RAM_SIZE=26624
+endif
 override FILES_TO_COMPILE := ../../ch32fun/ch32fun.c usb_bootloader.c $(ADDITIONAL_C_FILES)
 EXTRA_ELF_DEPENDENCIES := funconfig.h boot_config.h usb_config.h usb_bootloader.ld Makefile
 include ../../ch32fun/ch32fun.mk

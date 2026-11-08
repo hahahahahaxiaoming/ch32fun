@@ -1,4 +1,17 @@
-# CH592 USB Bootloader（兼容 CH591）
+# CH570 / CH592 USB Bootloader（CH592 固件兼容 CH591）
+
+## CH570 配置
+
+- `make CH570` 或 `make build TARGET_MCU=CH570` 生成 `build/CH570/usb_bootloader.bin`，同目录另有 HEX、ELF、MAP 和 LST。
+- CH570 使用独立固件，按 240 KiB 用户 Flash、12 KiB RAM 链接。Bootloader 占前 4 KiB，应用从 `0x1000` 开始，最多 236 KiB。
+- 系统时钟使用 `CLK_SOURCE_PLL_60MHz`。CH570Q 的 USB 使用 PA0（D−，3 脚）和 PA1（D+，4 脚），与两线调试复用。Bootloader 在启用 USB 前清除 `RB_PIN_DEBUG_EN`，释放这两个引脚。
+- **CH570 固定 `BOOT_LOG_ENABLE=0`**，不初始化日志 UART，不编译日志代码及字符串。
+- **按键和 LED 均为 PA7，按键低电平有效，LED 高电平点亮。** 上电先将 PA7 配置为上拉输入、读取按键；进入 USB Boot 后将 PA7 配置为推挽输出高电平，之后不再检测按键。
+- **共用 PA7 的硬件限制：** 若按键直接将 PA7 接地，LED 输出高电平时继续按住或再次按下会造成输出冲突，外部电路必须解决该冲突。高电平点亮的 LED 支路也可能影响上拉输入时的电压，必须实测未按下时能读到高电平。仅切换输入/输出模式不能保证该接线可靠。
+- CH570 应用入口同样检查 `0x1000` 的跳转指令，以及 `0x1014` 的 SDK 向量表标记 `0xF3F9BDA9`；CH592 保持 `0xF5F9BDA9`。CH570 应用需自行链接到 `0x1000` 并保留对应标记，不能直接烧录链接到 0 的应用。
+- `BOOT_FORCE_STAY` 默认为 `0`，允许启动有效应用。排查 USB 枚举时可临时改为 `1` 并重新编译，此时上电和空闲超时都不会跳到应用，无需按住 PA7。升级协议、进入请求 `0xB7`、运行请求 `0xB8` 和 30 秒空闲超时沿用原逻辑。
+
+以下 PB4、PB23、UART1 PA9 及 CH592F_DEMO 说明适用于 CH592/CH591。
 
 **当前 `BOOT_FORCE_STAY=0`：按住 PB4 上电/复位，或应用写入进入请求标记时，停留 Bootloader；否则检查 `0x1000` 的应用入口，有应用则跳转，没有则停留。排查时可将此项改为 1，禁止所有应用跳转。**
 
@@ -27,13 +40,14 @@
 
 ## 编译
 
-在本目录运行 `make`，生成 CH591、CH592 共用的一份 CH592 固件：
+在本目录运行 `make`，生成 CH570 固件和 CH591、CH592 共用的一份 CH592 固件：
 
 ```text
+build/CH570/usb_bootloader.bin   .hex / .elf / .map
 build/CH592/usb_bootloader.bin   .hex / .elf / .map
 ```
 
-也可使用 `make build TARGET_MCU=CH592`，输出目录固定为 `build/CH592`。
+只编译 CH592 可使用 `make CH592` 或 `make build TARGET_MCU=CH592`，输出目录为 `build/CH592`。
 
 已适配外部项目 `D:/Flowtech/2602ch592/software/CH592F_DEMO`：
 
@@ -77,4 +91,5 @@ D:\github\ch32fun\minichlink\minichlink.exe -C b003boot -w "D:\Flowtech\2602ch59
 
 ## 验证
 
-当前已完成编译及镜像布局检查。板上已验证 USB 枚举、minichlink 写入及完整回读；应用启动交接仍在排查。
+- CH570Q 已在 60 MHz、`BOOT_FORCE_STAY=1` 的调试配置下验证 USB HID 枚举。默认已恢复为 `BOOT_FORCE_STAY=0`。板上 USB 升级和应用跳转待验证。
+- CH592 已完成编译及镜像布局检查，板上已验证 USB 枚举、minichlink 写入及完整回读。应用启动交接仍在排查。
