@@ -382,9 +382,10 @@ void USBFS_IRQHandler()
 									ctx->USBFS_SetupReqLen = len;
 									if( ctx->pCtrlPayloadPtr )
 									{
-										copyBuffer( ctrl0buff, ctx->pCtrlPayloadPtr, len );
+										int first_len = len >= DEF_USBD_UEP0_SIZE ? DEF_USBD_UEP0_SIZE : len;
+										copyBuffer( ctrl0buff, ctx->pCtrlPayloadPtr, first_len );
 										// printf("%02x-%02x-%02x-%02x-%02x-%02x-%02x\n", ctrl0buff[0], ctrl0buff[1], ctrl0buff[2], ctrl0buff[3], ctrl0buff[4], ctrl0buff[5], ctrl0buff[6]);
-										ctx->pCtrlPayloadPtr += len;
+										ctx->pCtrlPayloadPtr += first_len;
 									}
 								}
 								
@@ -692,6 +693,9 @@ void USBFS_IRQHandler()
 
 		USBFS->DEV_ADDR = 0;
 		USBFS_InternalFinishSetup();
+#ifdef FUSB_RESET_CALLBACK
+		FUSB_RESET_CALLBACK();
+#endif
 		USBFS->INT_FG = CRB_UIF_BUS_RST;
 	}
 	else if( intfgst & CRB_UIF_SUSPEND )
